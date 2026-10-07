@@ -1,0 +1,12 @@
+{
+ "goal": "Fight monsters on prt_fild08/f00 safely. Drink a potion when HP drops below 50 percent. Flee if overwhelmed.",
+ "rules": {
+  "attack": true,
+  "greet": false,
+  "heal": true,
+  "build": true
+ },
+ "greetings": [
+  "o/"
+ ]
+}

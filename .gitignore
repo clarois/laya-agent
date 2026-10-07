@@ -1,0 +1,6 @@
+# generated / debug
+static_cache.json
+log.txt
+*.png
+__pycache__/
+*.pyc
