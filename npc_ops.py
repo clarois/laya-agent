@@ -28,7 +28,7 @@ def read_dialog(api):
     """Current dialog: text + menu options (if any)."""
     return _dialog(api)
 
-def next(api):
+def dialog_next(api):
     r = api("next")
     time.sleep(0.8)
     return _dialog(api)
@@ -148,7 +148,7 @@ def job_change(api, target_job_name, max_steps=12, log=print):
         # plain text, advance
         nxt = dlg.get("next")
         if nxt:
-            dlg = next(api)
+            dlg = dialog_next(api)
             continue
         # nothing actionable
         break
