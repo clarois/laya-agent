@@ -75,13 +75,27 @@ def find_shops(api):
         return []
     for s in shops:
         t = (s.get("text") or "").lower()
-        if t.startswith("s>") or "sell" in t or t.startswith("wts"):
-            s["kind"] = "sell"
-        elif t.startswith("b>") or "buy" in t:
+        # buy: explicit buy intent (B>, buying, buys, WTB = want-to-buy)
+        if (t.startswith("b>") or "buy" in t or "wtb" in t
+                or "want to buy" in t):
             s["kind"] = "buy"
-        else:
+        # sell: explicit sell intent (S>, wts, selling) or a plain vendor sign
+        # (most signs advertise items for sale; pure greetings sort to 'shop')
+        elif (t.startswith("s>") or "wts" in t or "sell" in t
+              or "for sale" in t):
+            s["kind"] = "sell"
+        elif _looks_like_greeting(t):
             s["kind"] = "shop"
+        else:
+            s["kind"] = "sell"  # a named vendor sign = selling something
     return shops
+
+
+def _looks_like_greeting(t):
+    """True for chatty signs that aren't really item vendors."""
+    greetings = ("happy hunting", "come on", "lol", "hi", "hello",
+                 "good luck", "glhf", "nice", "cool")
+    return any(t.startswith(g) or t == g for g in greetings)
 
 
 def shops_of_kind(api, kind):
