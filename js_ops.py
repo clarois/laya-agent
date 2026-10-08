@@ -69,16 +69,29 @@ BODIES = {
             if (!c) return { open: false, items: [] };
             const root = c.getRoot ? c.getRoot() : c._host;
             const open = !!(root && root.isConnected && __visible(root));
+            // store type: vend (sell vendor) vs buy (buying store) vs npc
+            let type = null;
+            try { type = (c.getType && c.getType()) || c._type || null; } catch (e) {}
+            // the seller/shop name if shown
+            let seller = null;
+            try { const el = root && root.querySelector('.seller'); seller = el ? el.textContent : null; } catch (e) {}
             const items = __deep('#NpcStore .content .item, .content .item[data-index]')
                 .filter(__visible)
-                .map(el => ({
-                    index: el.getAttribute('data-index'),
-                    name: (el.querySelector('.name')||{}).textContent || '',
-                    amount: (el.querySelector('.amount')||{}).textContent || '',
-                    x: Math.round(el.getBoundingClientRect().left + el.getBoundingClientRect().width/2),
-                    y: Math.round(el.getBoundingClientRect().top + el.getBoundingClientRect().height/2),
-                }));
-            return { open, items };
+                .map(el => {
+                    const g = sel => { const e = el.querySelector(sel); return e ? (e.textContent||'').trim() : ''; };
+                    const r = el.getBoundingClientRect();
+                    return {
+                        index: el.getAttribute('data-index'),
+                        name: g('.name'),
+                        amount: g('.amount'),
+                        price: g('.price'),
+                        currency: g('.unity') || 'Z',
+                        x: Math.round(r.left + r.width/2),
+                        y: Math.round(r.top + r.height/2),
+                    };
+                })
+                .filter(it => it.name);
+            return { open, type, seller, items };
         } catch (e) { return { open: false, error: String(e), items: [] }; }
     """,
     # ---- inventory items (by ITID) ----

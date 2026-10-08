@@ -64,13 +64,29 @@ def parse_menu(dlg):
 
 
 def find_shops(api):
-    """List every visible player-shop sign from the DOM: [{text,x,y}, ...].
-    text is the S>/B> title (e.g. 'S> Steel 5.9k', 'Coratae is buying').
-    Coordinates are click-space centers, ready for api('click')."""
+    """List every visible player-shop sign from the DOM: [{text,kind,x,y}, ...].
+    text is the title (e.g. 'S> Steel 5.9k', 'Coratae is buying'); kind is
+    'sell' (S>) / 'buy' (B>/buys/buying) / 'shop' (other). Coordinates are
+    click-space centers, ready for api('click')."""
     shops = js_ops.run(api, "shops")
     if isinstance(shops, dict) and shops.get("error"):
         return []
-    return shops if isinstance(shops, list) else []
+    if not isinstance(shops, list):
+        return []
+    for s in shops:
+        t = (s.get("text") or "").lower()
+        if t.startswith("s>") or "sell" in t or t.startswith("wts"):
+            s["kind"] = "sell"
+        elif t.startswith("b>") or "buy" in t:
+            s["kind"] = "buy"
+        else:
+            s["kind"] = "shop"
+    return shops
+
+
+def shops_of_kind(api, kind):
+    """Shops classified by kind: 'sell' (vendors selling), 'buy' (buying stores)."""
+    return [s for s in find_shops(api) if s.get("kind") == kind]
 
 
 def shop_by_text(api, substring):
