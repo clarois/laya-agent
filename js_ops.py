@@ -131,9 +131,16 @@ BODIES = {
 
 def run(api, name, arg=None, t=30):
     """Run a named body (or raw JS) via the `js` command. Returns the value,
-    or {'error': ...} if the command is missing/failed."""
+    or {'error': ...} if the command is missing/failed.
+
+    `t` (timeout) is only forwarded if the api callable accepts it — core.api
+    has no timeout kwarg, our ad-hoc test helpers do."""
     body = BODIES.get(name, name)  # allow raw JS too
-    r = api("js", [body] + ([json.dumps(arg)] if arg is not None else []), t=t)
+    args = [body] + ([json.dumps(arg)] if arg is not None else [])
+    try:
+        r = api("js", args, t=t)
+    except TypeError:
+        r = api("js", args)  # api doesn't take a timeout
     if isinstance(r, dict) and "error" in r and "result" not in r:
         return {"error": r.get("error"), "commands": r.get("commands")}
     if isinstance(r, dict):
