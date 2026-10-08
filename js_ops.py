@@ -64,37 +64,48 @@ BODIES = {
     """,
     # ---- NpcStore (shop window) contents once open ----
     "store_items": """
+        // Read an open shop window (player Merchant Shop = WinVendingStore, or an
+        // NPC store = NpcStore): seller title + item rows (name/amount/price).
+        // Rows live at .content > .item > .name/.price/.amount across shadow roots.
         try {
-            const c = window.roAgent.modules.UIManager.getComponent('NpcStore');
-            if (!c) return { open: false, items: [] };
-            const root = c.getRoot ? c.getRoot() : c._host;
-            const open = !!(root && root.isConnected && __visible(root));
-            // store type: vend (sell vendor) vs buy (buying store) vs npc
-            let type = null;
-            try { type = (c.getType && c.getType()) || c._type || null; } catch (e) {}
-            // the seller/shop name if shown
-            let seller = null;
-            try { const el = root && root.querySelector('.seller'); seller = el ? el.textContent : null; } catch (e) {}
-            const items = __deep('#NpcStore .content .item, .content .item[data-index]')
-                .filter(__visible)
-                .map(el => {
-                    const g = sel => { const e = el.querySelector(sel); return e ? (e.textContent||'').trim() : ''; };
-                    const r = el.getBoundingClientRect();
-                    return {
-                        index: el.getAttribute('data-index'),
-                        name: g('.name'),
-                        amount: g('.amount'),
-                        price: g('.price'),
-                        currency: g('.unity') || 'Z',
-                        x: Math.round(r.left + r.width/2),
-                        y: Math.round(r.top + r.height/2),
-                    };
-                })
-                .filter(it => it.name);
-            return { open, type, seller, items };
+            const rows = [];
+            const g = (el, sel) => { const e = el.querySelector(sel); return e ? (e.textContent||'').trim() : ''; };
+            let seller = null, type = null;
+            const visit = root => {
+                root.querySelectorAll('*').forEach(el => {
+                    if (el.shadowRoot) visit(el.shadowRoot);
+                    if (el.classList && el.classList.contains('item')) {
+                        const name = g(el, '.name');
+                        if (name) rows.push({
+                            index: el.getAttribute('data-index'),
+                            name,
+                            amount: g(el, '.amount') || g(el, '.count'),
+                            price: g(el, '.price') || g(el, '.expanded_price') || g(el, '.currency'),
+                            currency: g(el, '.unity') || 'Z',
+                        });
+                    }
+                    // seller title (WinVendingStore .seller) + store type hint
+                    if (el.classList && el.classList.contains('seller') && !seller)
+                        seller = (el.textContent||'').trim().replace(/^Merchant Shop *- */i,'');
+                });
+            };
+            visit(document);
+            // open = any shop window visible OR we found rows
+            const openWindows = [];
+            for (const n of ['NpcStore','VendingShop','Vending']) {
+                try { const c = window.roAgent.modules.UIManager.getComponent(n);
+                      const rt = c && (c.getRoot ? c.getRoot() : c._host);
+                      if (rt && rt.isConnected && __visible(rt)) openWindows.push(n); } catch (e) {}
+            }
+            const open = rows.length > 0 || openWindows.length > 0;
+            // type: buy-vendor if a buying-store window; sell-vendor if Merchant Shop
+            if (openWindows.includes('VendingShop') || seller) type = 'vend';
+            else if (openWindows.includes('NpcStore')) type = 'npc';
+            return { open, type, seller, openWindows, count: rows.length, items: rows };
         } catch (e) { return { open: false, error: String(e), items: [] }; }
     """,
     # ---- inventory items (by ITID) ----
+    
     "inventory": """
         try {
             const inv = window.roAgent.modules.UIManager.getComponent('Inventory');
