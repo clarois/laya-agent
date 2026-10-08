@@ -4,6 +4,7 @@
 # Spend = send CZ.UPGRADE_SKILLLEVEL once per point (same packet the skill
 # window's "+" uses), so the server validates prerequisites and refunds nothing.
 import json, os, time
+import js_ops
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SKILL_DB = os.path.join(BASE, "skill_db.json")
@@ -18,21 +19,58 @@ def preset(name):
     return _db()["presets"].get(name, [])
 
 def read_skills(api):
-    """Current skill levels from the game (id -> level). Uses the API's skills cmd."""
-    r = api("skills")
+    """Current skill levels (id -> level). Read from the client via `js`
+    (window.roAgent.skills() — live, no DB lag). Falls back to the skills cmd."""
+    r = js_ops.run(api, "skills")
     out = {}
-    if isinstance(r, list):
-        for s in r:
+    def _collect(lst):
+        for s in lst or []:
             lv = s.get("level")
-            if lv:  # level 0 / null = not learned
-                out[s.get("id")] = lv
+            sid = s.get("id", s.get("skillId"))
+            if sid is not None and lv:
+                out[sid] = lv
+    if isinstance(r, list):
+        _collect(r)
+    elif isinstance(r, dict) and isinstance(r.get("skills"), list):
+        _collect(r["skills"])
+    if out:
+        return out
+    # fallback: driver skills command
+    r = api("skills")
+    if isinstance(r, list):
+        _collect(r)
     return out
 
 def skill_points(api):
-    """Pending skill points. From the char table (server truth) — cheap SQL."""
-    import knight_build
-    rows = knight_build.sql("SELECT skill_point FROM `char` WHERE char_id=%d" % knight_build.CHAR_ID)
+    """Pending skill points, read live from the client (SkillList DOM / Session)
+    via `js` — the SQL/DB lags minutes behind. Returns 0 if unreadable."""
+    body = """
+        try {
+            const S = window.roAgent.modules.Session;
+            // Session.Entity often carries skillPoint / skill_point
+            const e = S && S.Entity;
+            if (e && (e.skillPoint != null || e.skill_point != null))
+                return { points: e.skillPoint != null ? e.skillPoint : e.skill_point };
+        } catch (err) {}
+        // Fall back to the SkillList window's own "Skill Points: N" label.
+        try {
+            const list = window.roAgent.modules.UIManager.getComponent('SkillList');
+            const root = list && list.getRoot ? list.getRoot() : null;
+            if (root) {
+                const txt = root.textContent || '';
+                const m = txt.match(/Skill Points\\s*:?\\s*(\\d+)/i);
+                if (m) return { points: parseInt(m[1], 10) };
+            }
+        } catch (err) {}
+        return { points: null };
+    """
+    r = js_ops.run(api, body)
+    if isinstance(r, dict) and isinstance(r.get("points"), int):
+        return r["points"]
+    # fallback to the char table (server truth, may lag)
     try:
+        import knight_build
+        rows = knight_build.sql("SELECT skill_point FROM `char` WHERE char_id=%d" % knight_build.CHAR_ID)
         return int(rows[0]["skill_point"])
     except Exception:
         return 0

@@ -1,9 +1,15 @@
 #!/usr/bin/env python
-# NPC interactions: Job Master (job change) and any dialog-driven NPC.
-# Uses the game API's walk/interact/dialog/next/choose — the same flow a human
-# clicks through. Job Master script (from standart-npc mod) needs all skill
-# points spent FIRST (Check_SkillPoints), then a menu -> confirm dialog.
+# NPC interactions: Job Master (job change), shop NPCs, and player merchants.
+#
+# Reads the DOM via the `js` command instead of pixel-guessing:
+#   - Merchant shop signs: __deep('.EntityRoom .title') -> text + rect
+#   - NPCs: window.roAgent.entities() -> click coords (no hover spiral)
+#   - Clicking: __rect(el) gives exact click coordinates
+# Dialog flow (Job Master from standart-npc mod): skill points spent FIRST
+# (Check_SkillPoints), then menu -> confirm dialog. Dialogs go STALE (~10s idle
+# shows only Close) so act fast between reads.
 import time
+import js_ops
 
 # NPC coordinates from the standart-npc mod files.
 JOB_MASTER = (157, 195)   # prontera jobmaster.txt
@@ -57,47 +63,66 @@ def parse_menu(dlg):
     return []
 
 
-def find_npc(api, name, center=None, scan=60, step=8):
-    """Locate an NPC by hovering pixels around `center` (default: its reported
-    click point) until the cursor picks a sprite whose name starts with `name`.
-    NPCs often overlap; the reported click point can hit a neighbor. Returns
-    (x, y) pixels of the sprite, or None."""
-    # find the entity's reported click point as a starting guess
-    st = api("state", ["20"]) or {}
-    ent = next((e for e in st.get("entities", [])
-                if e.get("type") == "NPC" and e.get("name", "").startswith(name)), None)
-    if not ent and not center:
-        return None
-    cx, cy = center or (ent.get("click", {}).get("x"), ent.get("click", {}).get("y"))
-    if cx is None:
-        return None
-    # scan a spiral of offsets around the guess
-    for r in range(0, scan, step):
-        for dx in range(-r, r + 1, step):
-            for dy in range(-r, r + 1, step):
-                if max(abs(dx), abs(dy)) != r:
-                    continue
-                h = api("hover", [str(cx + dx), str(cy + dy), "--px"])
-                over = (h.get("mouse") or {}).get("over") or {}
-                if over.get("name", "").startswith(name):
-                    return (cx + dx, cy + dy)
+def find_shops(api):
+    """List every visible player-shop sign from the DOM: [{text,x,y}, ...].
+    text is the S>/B> title (e.g. 'S> Steel 5.9k', 'Coratae is buying').
+    Coordinates are click-space centers, ready for api('click')."""
+    shops = js_ops.run(api, "shops")
+    if isinstance(shops, dict) and shops.get("error"):
+        return []
+    return shops if isinstance(shops, list) else []
+
+
+def shop_by_text(api, substring):
+    """First shop whose title contains `substring` (case-insensitive)."""
+    sub = substring.lower()
+    for s in find_shops(api):
+        if sub in (s.get("text") or "").lower():
+            return s
+    return None
+
+
+def open_shop(api, sign, log=print):
+    """Click a shop sign (from find_shops) to open its buy/sell window.
+    Returns the NpcStore state after the click."""
+    if isinstance(sign, dict):
+        x, y = sign.get("x"), sign.get("y")
+    else:
+        x, y = sign
+    log("  SHOP click sign at (%s,%s)" % (x, y))
+    api("click", [str(x), str(y)])
+    time.sleep(1.5)
+    return store_state(api)
+
+
+def store_state(api):
+    """Read the NpcStore (shop) window: open? what items? via DOM."""
+    st = js_ops.run(api, "store_items")
+    if isinstance(st, dict):
+        return st
+    return {"open": False, "items": []}
+
+
+def find_npc(api, name):
+    """Locate an NPC by name using window.roAgent.entities() (DOM-backed, no
+    pixel hover-spiral). Returns (x, y) click coords or None."""
+    body = """
+        const ents = window.roAgent.entities();
+        const e = ents.find(e => e.type === 'NPC' && (e.name||'').startsWith(arg));
+        if (!e || !e.click) return null;
+        return { x: e.click.x, y: e.click.y, gid: e.gid };
+    """
+    r = js_ops.run(api, body, arg=name)
+    if isinstance(r, dict) and r.get("x") is not None:
+        return (r["x"], r["y"])
     return None
 
 def interact_npc(api, name, log=print):
-    """Walk to an NPC's area, find its true sprite pixels, and interact (click)."""
-    st = api("state", ["20"]) or {}
-    ent = next((e for e in st.get("entities", [])
-                if e.get("type") == "NPC" and e.get("name", "").startswith(name)), None)
-    if not ent:
-        return {"ok": False, "reason": "npc '%s' not found nearby" % name}
-    # approach the NPC's cell (walk stops adjacent)
-    x, y = ent.get("position", [0, 0])
-    api("walk", [str(x), str(y)])
-    time.sleep(1.2)
+    """Find an NPC's click point via DOM and click it to open its dialog."""
     px = find_npc(api, name)
     if not px:
-        return {"ok": False, "reason": "found %s but could not hover its sprite" % name}
-    log("  NPC %s at pixels %s" % (name, px))
+        return {"ok": False, "reason": "npc '%s' not found in entities" % name}
+    log("  NPC %s at (%s,%s)" % (name, px[0], px[1]))
     api("click", [str(px[0]), str(px[1])])
     time.sleep(1.5)
     return _dialog(api)
@@ -126,12 +151,25 @@ def job_change(api, target_job_name, max_steps=12, log=print):
         if "more base levels" in text.lower() or "level requirement" in text.lower():
             return False, "job_change: level requirement not met: " + text[:120]
         if menu:
-            # pick the target job from the menu
-            want = next((i for i, m in enumerate(menu) if m.strip().lower() == target_job_name.lower()), None)
+            # menu items look like " ~ Swordsman"; strip the bullet, match loosely
+            clean = [m.replace("\u00a0", " ").split(" ~ ")[-1].strip() for m in menu]
+            want = next((i for i, c in enumerate(clean)
+                         if c.lower() == target_job_name.lower()), None)
+            if want is None:  # substring fallback (e.g. 'Swordman' vs 'Swordsman')
+                want = next((i for i, c in enumerate(clean)
+                             if target_job_name.lower() in c.lower()
+                             or c.lower() in target_job_name.lower()), None)
             if want is None:
                 return False, "job_change: '%s' not in menu %s" % (target_job_name, menu)
             log("  JOB menu: choosing '%s' (option %d)" % (menu[want], want + 1))
             dlg = choose(api, want + 1)
+            continue
+        # Stale dialog: menu present but empty (idle >~10s shows only close). Re-open fast.
+        if dlg.get("open") and not menu and not dlg.get("next") and dlg.get("close"):
+            log("  JOB dialog went stale; reopening")
+            api("close")
+            time.sleep(0.8)
+            dlg = interact_npc(api, "Job Master", log=log)
             continue
         # confirmation dialog: 'Do you want to change into X class?'
         if "want to change" in text.lower() or "change into" in text.lower():
